@@ -5,12 +5,19 @@ from typing import List, Optional
 
 from responses import JSONResponse
 from services import RequestService
-from settings import *
+from settings import (
+    ALLOW_MAC_URL_ENDPOINT,
+    BASE_URL_ENDPOINT,
+    BASE_URL_WITH_TOKEN_ENDPOINT,
+    DEFAULT_MAC_PREFIX,
+    DENY_MAC_URL_ENDPOINT,
+    GET_DEVICE_LIST_URL_ENDPOINT,
+    LOGIN_URL_ENDPOINT,
+    SECRET_KEY,
+)
 
 
 class MiRouter:
-
-
     def __init__(self, gateway_url: str, token=None):
         self.token = token
         self.gateway_url = self.fix_gateway_url(gateway_url)
@@ -76,7 +83,9 @@ class MiRouter:
 
     def get_full_devices_info(self) -> JSONResponse:
         """Select all connected to router devices."""
-        return RequestService.get(self.base_url_with_token + GET_DEVICE_LIST_URL_ENDPOINT)
+        return RequestService.get(
+            self.base_url_with_token + GET_DEVICE_LIST_URL_ENDPOINT
+        )
 
     def get_connected_mac_addresses(self) -> Optional[List[str]]:
         """Get connected to router mac addresses except admin one."""
@@ -96,7 +105,9 @@ class MiRouter:
 
         mac_addresses = self.get_connected_mac_addresses()
         for mac in mac_addresses:
-            response = RequestService.get(self.base_url_with_token + url.format(mac=mac))
+            response = RequestService.get(
+                self.base_url_with_token + url.format(mac=mac)
+            )
 
             if not response.is_succeeded:
                 return JSONResponse(is_succeeded=False)
