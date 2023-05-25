@@ -28,7 +28,7 @@ class MiRouter:
     def get_random_mac() -> str:
         """Return a random MAC address."""
         random_numbers = ":".join(f"{random.randint(0, 255):02x}" for _ in range(3))
-        return DEFAULT_MAC_PREFIX + random_numbers
+        return DEFAULT_MAC_PREFIX + ":" + random_numbers
 
     def get_random_nonce(self) -> str:
         """Get nonce for random mac address."""
@@ -49,7 +49,7 @@ class MiRouter:
         """Return base URL for the router's web interface with token."""
         if not self.token:
             return self.base_url
-        return self.gateway_url + BASE_URL_WITH_TOKEN_ENDPOINT.format(self.token)
+        return self.gateway_url + BASE_URL_WITH_TOKEN_ENDPOINT.format(token=self.token)
 
     def get_encoded_password(self, password) -> str:
         """Encode password to make it valid for API."""
@@ -70,21 +70,21 @@ class MiRouter:
     def login(self, username: str, password: str) -> JSONResponse:
         """Get a password and a username, and set a token."""
         response = self.send_login_request(username, password)
-        if response.ok:
-            self.token = response["token"]
+        if response.is_succeeded:
+            self.token = response.content["token"]
         return response
 
     def get_full_devices_info(self) -> JSONResponse:
         """Select all connected to router devices."""
-        return RequestService.get(self.base_url + GET_DEVICE_LIST_URL_ENDPOINT)
+        return RequestService.get(self.base_url_with_token + GET_DEVICE_LIST_URL_ENDPOINT)
 
     def get_connected_mac_addresses(self) -> Optional[List[str]]:
         """Get connected to router mac addresses except admin one."""
         devices_response = self.get_full_devices_info()
-        if not devices_response.ok:
+        if not devices_response.is_succeeded:
             return []
-        current_device_mac = devices_response["content"]["mac"]
-        devices = devices_response["content"]["list"]
+        current_device_mac = devices_response.content["mac"]
+        devices = devices_response.content["list"]
         return [
             device["mac"] for device in devices if device["mac"] != current_device_mac
         ]
@@ -96,9 +96,9 @@ class MiRouter:
 
         mac_addresses = self.get_connected_mac_addresses()
         for mac in mac_addresses:
-            response = RequestService.get(self.base_url_with_token + url.format(mac))
+            response = RequestService.get(self.base_url_with_token + url.format(mac=mac))
 
-            if not response.ok:
+            if not response.is_succeeded:
                 return JSONResponse(is_succeeded=False)
 
         return JSONResponse(is_succeeded=True)

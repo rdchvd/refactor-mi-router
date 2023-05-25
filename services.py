@@ -11,12 +11,14 @@ class RequestService:
     @staticmethod
     def handle_response(response: Response) -> JSONResponse:
         """Unpack response if possible and set its status."""
+        status_code = 0
         try:
             content = response.json()
+            status_code = content.get("code", 0)
         except JSONDecodeError:
             content = response.content
 
-        if response.ok:
+        if response.ok and status_code == 0:
             return JSONResponse(is_succeeded=True, content=content)
         else:
             return JSONResponse(is_succeeded=False, content=content)
@@ -32,7 +34,8 @@ class RequestService:
 
         request_headers = CaseInsensitiveDict()
         request_headers["Access-Control-Request-Method"] = "GET"
-        request_headers.update(headers)
+        if headers:
+            request_headers.update(headers)
 
         response = requests.get(url=url, headers=request_headers, params=params)
         return cls.handle_response(response)
@@ -44,7 +47,8 @@ class RequestService:
         """Send POST request and handle response."""
 
         request_headers = CaseInsensitiveDict()
-        request_headers.update(headers)
+        if headers:
+            request_headers.update(headers)
 
         response = requests.post(url=url, headers=request_headers, data=data)
         return cls.handle_response(response)
