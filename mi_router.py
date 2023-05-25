@@ -1,85 +1,112 @@
 import hashlib
 import random
 import time
+from typing import List, Optional
 
-import requests
-from requests.structures import CaseInsensitiveDict
-from urllib3.exceptions import HeaderParsingError
+from responses import JSONResponse
+from services import RequestService
+from settings import *
 
 
 class MiRouter:
-    KEY = "a2ffa5c9be07488bbb04a3a47d3c5f6a"
 
-    def __init__(self, gateway_url, token=None):
-        self.mac_prefix = "e4:46:da"
+
+    def __init__(self, gateway_url: str, token=None):
         self.token = token
-        if not any(i in gateway_url for i in ["http://", "https://"]):
-            gateway_url = "http://" + gateway_url
-        self.gateway_url = gateway_url
-        self.random_mac_address = self.mac_prefix + ":".join("%02x" % random.randint(0, 255) for _ in range(3))
-        self.nonce = f"0_{self.random_mac_address}_{int(time.time())}_9999"
+        self.gateway_url = self.fix_gateway_url(gateway_url)
+        self.random_mac_address = self.get_random_mac()
+        self.nonce = self.get_random_nonce()
 
     @staticmethod
-    def sha1(string):
+    def fix_gateway_url(gateway_url: str) -> str:
+        """Add http suffix to url to make it valid."""
+        if not gateway_url.startswith(("http://", "https://")):
+            gateway_url = "http://" + gateway_url
+        return gateway_url
+
+    @staticmethod
+    def get_random_mac() -> str:
+        """Return a random MAC address."""
+        random_numbers = ":".join(f"{random.randint(0, 255):02x}" for _ in range(3))
+        return DEFAULT_MAC_PREFIX + random_numbers
+
+    def get_random_nonce(self) -> str:
+        """Get nonce for random mac address."""
+        return f"0_{self.random_mac_address}_{int(time.time())}_9999"
+
+    @staticmethod
+    def sha1(string) -> str:
         """Encode string as UTF-8, and hash it using SHA-1."""
         return hashlib.sha1(string.encode()).hexdigest()
 
-    @staticmethod
-    def handle_response(message="", data=None, success=True):
-        """Return a dictionary with the keys 'success', 'message', and 'data'."""
-        return {"success": success, "message": message, "data": data}
+    @property
+    def base_url(self) -> str:
+        """Return base URL for the router's web interface."""
+        return self.gateway_url + BASE_URL_ENDPOINT
 
-    def handle_get_request(self, url):
-        """Get url, append it to the base url, and make a get request to that url."""
-        headers = CaseInsensitiveDict()
-        headers["Access-Control-Request-Method"] = "GET"
-        try:
-            req = requests.get(f"{self.get_base_url(with_token=True)}/{url}", headers=headers)
-            if req.status_code == 200:
-                return self.handle_response(data=req.json())
-            return self.handle_response(data=req.content, success=False)
-        except HeaderParsingError:
-            return self.handle_response(data=req.content, success=False)
+    @property
+    def base_url_with_token(self) -> str:
+        """Return base URL for the router's web interface with token."""
+        if not self.token:
+            return self.base_url
+        return self.gateway_url + BASE_URL_WITH_TOKEN_ENDPOINT.format(self.token)
 
-    def get_base_url(self, with_token=False):
-        """Return a string that is the base URL for the router's web interface"""
-        if with_token:
-            return f"{self.gateway_url}/cgi-bin/luci/;stok={self.token}"
-        return f"{self.gateway_url}/cgi-bin/luci"
+    def get_encoded_password(self, password) -> str:
+        """Encode password to make it valid for API."""
+        return self.sha1(self.nonce + self.sha1(password + SECRET_KEY))
 
-    def login(self, password, user="admin"):
-        """Get a password and a username, and return a token."""
-        url = f"{self.get_base_url()}/api/xqsystem/login"
-        req = requests.post(
-            url,
-            {
-                "username": user,
-                "password": self.sha1(self.nonce + self.sha1(password + self.KEY)),
-                "logtype":  2,
-                "nonce":    self.nonce,
+    def send_login_request(self, username: str, password: str) -> JSONResponse:
+        """Send a login request."""
+        return RequestService.post(
+            url=self.base_url + LOGIN_URL_ENDPOINT,
+            data={
+                "username": username,
+                "password": self.get_encoded_password(password),
+                "logtype": 2,
+                "nonce": self.nonce,
             },
         )
-        response = req.json()
-        if req.status_code == 200 and "token" in response:
+
+    def login(self, username: str, password: str) -> JSONResponse:
+        """Get a password and a username, and set a token."""
+        response = self.send_login_request(username, password)
+        if response.ok:
             self.token = response["token"]
-            return self.handle_response(data=response)
-        return self.handle_response(data=req.content, success=False)
+        return response
 
-    def device_list(self):
-        return self.handle_get_request("api/misystem/devicelist")
+    def get_full_devices_info(self) -> JSONResponse:
+        """Select all connected to router devices."""
+        return RequestService.get(self.base_url + GET_DEVICE_LIST_URL_ENDPOINT)
 
-    def list_devices(self):
-        devices = self.handle_get_request("api/misystem/devicelist")
-        return [device["mac"] for device in devices["data"]["list"] if device["mac"] != devices["data"]["mac"]]
+    def get_connected_mac_addresses(self) -> Optional[List[str]]:
+        """Get connected to router mac addresses except admin one."""
+        devices_response = self.get_full_devices_info()
+        if not devices_response.ok:
+            return []
+        current_device_mac = devices_response["content"]["mac"]
+        devices = devices_response["content"]["list"]
+        return [
+            device["mac"] for device in devices if device["mac"] != current_device_mac
+        ]
 
-    def deny_devices(self):
-        mac_addresses = self.list_devices()
+    def send_request_for_all_devices(self, url: str) -> JSONResponse:
+        """Send get request to all mac devices."""
+        if url not in [DENY_MAC_URL_ENDPOINT, ALLOW_MAC_URL_ENDPOINT]:
+            raise NotImplementedError
+
+        mac_addresses = self.get_connected_mac_addresses()
         for mac in mac_addresses:
-            self.handle_get_request(f"api/xqsystem/set_mac_filter?mac={mac}&wan=0")
-        return dict(status="OK")
+            response = RequestService.get(self.base_url_with_token + url.format(mac))
 
-    def allow_devices(self):
-        mac_addresses = self.list_devices()
-        for mac in mac_addresses:
-            self.handle_get_request(f"api/xqsystem/set_mac_filter?mac={mac}&wan=1")
-        return dict(status="OK")
+            if not response.ok:
+                return JSONResponse(is_succeeded=False)
+
+        return JSONResponse(is_succeeded=True)
+
+    def deny_network_for_all_devices(self) -> JSONResponse:
+        """Remove network connection for all connected to router devices."""
+        return self.send_request_for_all_devices(DENY_MAC_URL_ENDPOINT)
+
+    def allow_network_for_all_devices(self) -> JSONResponse:
+        """Allow network connection to all connected to router devices."""
+        return self.send_request_for_all_devices(ALLOW_MAC_URL_ENDPOINT)
